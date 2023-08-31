@@ -1,134 +1,133 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 	"net"
 	"os"
-	"syscall"
+	"strings"
+	"sync"
 	"time"
 )
 
-func open(ifName string) (net.PacketConn, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)
-	if err != nil {
-		return nil, fmt.Errorf("failed open socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW): %s", err)
-	}
-	err = syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL, 1)
-	if err != nil {
-		return nil, errors.New("could not set sockopt")
-	}
-
-	if ifName != "" {
-		_, err := net.InterfaceByName(ifName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find interface: %s: %s", ifName, err)
-		}
-		err = syscall.SetsockoptString(fd, syscall.SOL_SOCKET, syscall.SO_BINDTODEVICE, ifName)
-		if err != nil {
-			return nil, errors.New("could not set setsockoptBind")
-		}
-	}
-
-	conn, err := net.FilePacketConn(os.NewFile(uintptr(fd), fmt.Sprintf("fd %d", fd)))
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
-}
-
-func buildUDPPacket(dst, src *net.UDPAddr, data []byte) ([]byte, error) {
-	buffer := gopacket.NewSerializeBuffer()
-	payload := gopacket.Payload(data)
-	ip := &layers.IPv4{
-		DstIP:    dst.IP,
-		SrcIP:    src.IP,
-		Version:  4,
-		TTL:      64,
-		Protocol: layers.IPProtocolUDP,
-	}
-	udp := &layers.UDP{
-		SrcPort: layers.UDPPort(src.Port),
-		DstPort: layers.UDPPort(dst.Port),
-	}
-	if err := udp.SetNetworkLayerForChecksum(ip); err != nil {
-		return nil, fmt.Errorf("failed calc checksum: %s", err)
-	}
-	if err := gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}, ip, udp, payload); err != nil {
-		return nil, fmt.Errorf("failed serialize packet: %s", err)
-	}
-	return buffer.Bytes(), nil
-}
-
 type listenResult struct {
-	ok    bool
-	err   string
-	iface string
+	ok         bool
+	err        string
+	fatalError bool
+	intFace    string
+	remoteIP   net.IP
 }
+
+var (
+	hmacKey     []byte
+	hmacKeyLock sync.Mutex
+)
 
 func main() {
-
-	if len(os.Args) != 2 {
-		fmt.Println("Missing destination IP. Use the IP address that this node is reachable from for this")
-		fmt.Println("peertester <destination IPv4>")
+	if len(os.Args) != 3 {
+		fmt.Println("Missing destination IP. Use the IP address that this host is reachable from for this")
+		fmt.Println("Arguments: <destination IPv4> <destination IPv6>")
 		return
 	}
 
 	dstIp := net.ParseIP(os.Args[1])
 	if dstIp == nil {
-		fmt.Println("Invalid IP address entered")
+		fmt.Println("Invalid IPv4 address entered")
 		return
 	}
 
-	lst := make(chan listenResult)
-	go listen(lst)
+	dstIp6 := net.ParseIP(os.Args[2])
+	if dstIp6 == nil {
+		fmt.Println("Invalid IPv6 address entered")
+		return
+	}
 
-	ifaces, err := net.Interfaces()
+	type intFaceResult struct {
+		v4 *listenResult
+		v6 *listenResult
+	}
+
+	newHmacKey()
+	var listenResultChannel = make(chan *listenResult)
+	var listenResultChannel6 = make(chan *listenResult)
+	go listenIntoChannel(listenResultChannel, listenResultChannel6)
+
+	intFaces, err := net.Interfaces()
 	if err != nil {
 		panic(err)
 	}
 
-	type failed struct {
-		iface  string
-		reason string
-	}
-	var failedArray = make([]failed, 0)
-
-	for _, iface := range ifaces {
-		time.Sleep(500 * time.Millisecond)
-		sendOnIface(iface, dstIp)
-		select {
-		case res := <-lst:
-			if res.ok {
-				if res.iface == iface.Name {
-					fmt.Println(" SUCCESS")
+	var finalMap = make(map[string]*intFaceResult)
+	for _, intFace := range intFaces {
+		time.Sleep(10 * time.Millisecond)
+		newHmacKey()
+		finalMap[intFace.Name] = &intFaceResult{
+			v4: &listenResult{err: "timeout"},
+			v6: &listenResult{err: "timeout"},
+		}
+		sendOnInterface(intFace, dstIp, dstIp6)
+		for i := 0; i < 2; i++ {
+			timedOut := false
+			select {
+			case re4 := <-listenResultChannel:
+				evaluateListenResult(re4, intFace.Name, false)
+				if re4.ok {
+					fmt.Print(" SUCCESS (v4) ")
 				} else {
-					fmt.Printf(" FAIL Received from %s instead of %s \n", res.iface, iface.Name)
-					failedArray = append(failedArray, failed{iface: iface.Name, reason: "Received from " + res.iface + " instead of " + iface.Name})
+					fmt.Print(" FAIL (v4) ")
 				}
-			} else {
-				fmt.Printf(" FAIL %s\n", res.err)
-				failedArray = append(failedArray, failed{iface: iface.Name, reason: res.err})
+				finalMap[intFace.Name].v4 = re4
+			case re6 := <-listenResultChannel6:
+				evaluateListenResult(re6, intFace.Name, true)
+				if re6.ok {
+					fmt.Print(" SUCCESS (v6) ")
+				} else {
+					fmt.Print(" FAIL (6) ")
+				}
+				finalMap[intFace.Name].v6 = re6
+			case <-time.After(2 * time.Second):
+				fmt.Print(" TIMEOUT ")
+				timedOut = true
 			}
-		case <-time.After(2 * time.Second):
-			fmt.Println(" FAIL")
-			failedArray = append(failedArray, failed{iface: iface.Name, reason: "No response"})
+			if timedOut {
+				break
+			}
+		}
+		fmt.Println()
+	}
+	fmt.Println("-- Failed interface summary --")
+
+	for intFaceName, result := range finalMap {
+		if (!result.v6.ok && !result.v4.ok) || (result.v4.fatalError || result.v6.fatalError) {
+			fmt.Printf("[%s] Error (v4): %s Error (v6): %s\n", intFaceName, result.v4.err, result.v6.err)
 		}
 	}
-
-	for _, f := range failedArray {
-		fmt.Println(f.iface, f.reason)
-	}
-
 }
 
-func listen(lst chan listenResult) {
+func evaluateListenResult(result *listenResult, intFace string, isV6 bool) {
+	expectedIP := "172.20.0.53"
+	if isV6 {
+		expectedIP = "fd42:d42:d42:54::1"
+	}
+	if !result.remoteIP.Equal(net.ParseIP(expectedIP)) {
+		result.err = "Packet from incorrect source IP: " + result.remoteIP.String()
+		result.fatalError = true
+		return
+	}
+
+	if result.intFace != intFace {
+		result.err = "Received from interface: " + result.intFace + " instead of " + intFace
+		result.fatalError = true
+		return
+	}
+	result.ok = true
+}
+
+func listenIntoChannel(lst chan *listenResult, lst6 chan *listenResult) {
 	addr := net.UDPAddr{
 		Port: 5000,
-		IP:   net.ParseIP("0.0.0.0"),
+		IP:   net.ParseIP(":"),
 	}
+	fmt.Println("Listening on udp port 5000")
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
 		panic(err)
@@ -140,34 +139,17 @@ func listen(lst chan listenResult) {
 			panic(err)
 		}
 		buf = buf[:numRead]
-		if !remote.IP.Equal(net.ParseIP("172.21.48.53")) {
-			lst <- listenResult{ok: false, err: "Packet from incorrect source IP: " + remote.String()}
+		hmacKeyLock.Lock()
+		opened := hmacOpen([16]byte(hmacKey), buf)
+		hmacKeyLock.Unlock()
+		if opened == nil {
+			fmt.Print(" received message with invalid hmac ")
 			continue
 		}
-		lst <- listenResult{ok: true, iface: string(buf)}
+		if !strings.Contains(remote.IP.String(), ":") {
+			lst <- &listenResult{intFace: string(opened), remoteIP: remote.IP}
+		} else {
+			lst6 <- &listenResult{intFace: string(opened), remoteIP: remote.IP}
+		}
 	}
-
-}
-
-func sendOnIface(iface net.Interface, dstIP net.IP) {
-	conn, err := open(iface.Name)
-	if err != nil {
-		fmt.Printf("[%s] Error: %s", iface.Name, err)
-		return
-	}
-	dst := &net.UDPAddr{
-		IP:   dstIP,
-		Port: 5000,
-	}
-	b, err := buildUDPPacket(dst, &net.UDPAddr{IP: net.ParseIP("172.21.48.53"), Port: 5000}, []byte(iface.Name))
-	if err != nil {
-		fmt.Printf("[%s] Error: %s", iface.Name, err)
-		return
-	}
-	_, err = conn.WriteTo(b, &net.IPAddr{IP: dst.IP})
-	if err != nil {
-		fmt.Printf("[%s] Error: %s", iface.Name, err)
-		return
-	}
-	fmt.Printf("[%s] Testing with destination: %s ", iface.Name, dst)
 }
