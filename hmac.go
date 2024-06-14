@@ -4,6 +4,12 @@ import (
 	"crypto/hmac"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"sync"
+)
+
+var (
+	hmacKey     []byte
+	hmacKeyLock sync.Mutex
 )
 
 func hmacSeal(key [16]byte, message []byte) []byte {
