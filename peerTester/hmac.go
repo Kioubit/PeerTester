@@ -1,15 +1,13 @@
-package main
+package peerTester
 
 import (
 	"crypto/hmac"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
-	"sync"
 )
 
 var (
-	hmacKey     []byte
-	hmacKeyLock sync.Mutex
+	hmacKey []byte
 )
 
 func hmacSeal(key [16]byte, message []byte) []byte {
@@ -34,8 +32,6 @@ func hmacOpen(key [16]byte, macMessage []byte) []byte {
 }
 
 func newHmacKey() {
-	hmacKeyLock.Lock()
-	defer hmacKeyLock.Unlock()
 	hmacKey = make([]byte, 16)
 	_, err := cryptorand.Read(hmacKey)
 	if err != nil {

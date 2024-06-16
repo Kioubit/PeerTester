@@ -14,7 +14,7 @@ Usage of ./peertester:
   -dst6 string
     	destination IPv6 address (the address this host can be reached from) or CIDR to find address from 'lo'
   -interface string
-    	optional target interface
+    	optional comma-separated target interface(s). Use '-' to read from stdin 
   -json
     	output as JSON
 ````
