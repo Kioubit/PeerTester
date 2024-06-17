@@ -7,9 +7,10 @@ import (
 type testResult int
 
 const (
-	OK        testResult = iota
-	Timeout   testResult = iota
-	InvalidIP testResult = iota
+	OK            testResult = iota
+	Timeout                  = iota
+	InvalidIP                = iota
+	UnexpectedTTL            = iota
 )
 
 var SourceIPv4 = net.ParseIP("172.20.0.53")

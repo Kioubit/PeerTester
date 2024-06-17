@@ -1,20 +1,20 @@
 package peerTester
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.WaitGroup, readyToListen *sync.WaitGroup) {
-	wg.Add(1)
 	var stopping atomic.Bool
 	addr := net.UDPAddr{
 		Port: 5000,
-		IP:   net.ParseIP(":"),
 	}
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
@@ -23,6 +23,27 @@ func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.W
 	}
 	if !OutputJSON {
 		fmt.Println("Listening on udp port 5000")
+	}
+
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	err = rawConn.Control(func(fd uintptr) {
+		if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_RECVHOPLIMIT, 1); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_RECVTTL, 1); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+	})
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 
 	go func() {
@@ -36,8 +57,9 @@ func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.W
 
 	readyToListen.Done()
 	for {
-		var buf = make([]byte, 1000)
-		numRead, remote, err := conn.ReadFromUDP(buf[:])
+		var buf = make([]byte, 1500)
+		var oobBuf = make([]byte, 1500)
+		numRead, numReadOOB, _, remote, err := conn.ReadMsgUDP(buf, oobBuf)
 		receiveTime := time.Now()
 		if err != nil {
 			if stopping.Load() {
@@ -66,6 +88,8 @@ func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.W
 			continue
 		}
 
+		ttlValue := parseOOBTTL(oobBuf[:numReadOOB])
+
 		isV4 := remote.IP.To4() != nil
 
 		lst <- &ListenResult{
@@ -74,10 +98,27 @@ func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.W
 				id:   id,
 				time: receiveTime,
 			},
-			isV4: isV4,
+			isV4:     isV4,
+			ttlValue: ttlValue,
 		}
 	}
 	_ = conn.Close()
 	close(lst)
 	wg.Done()
+}
+
+func parseOOBTTL(oobData []byte) (ttl int32) {
+	cMSGs, err := syscall.ParseSocketControlMessage(oobData)
+	if err != nil {
+		return -1
+	}
+	for _, msg := range cMSGs {
+		if msg.Header.Type == syscall.IP_TTL {
+			return int32(binary.NativeEndian.Uint32(msg.Data))
+		}
+		if msg.Header.Type == syscall.IPV6_HOPLIMIT {
+			return int32(binary.NativeEndian.Uint32(msg.Data))
+		}
+	}
+	return -1
 }

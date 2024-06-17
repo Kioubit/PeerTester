@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ type ListenResult struct {
 	receiveTime timeInfo
 	isV4        bool
 	remoteIP    net.IP
+	ttlValue    int32
 }
 
 type IntFaceResult struct {
@@ -35,6 +37,7 @@ func PerformTests(intFaces []net.Interface, dstIp net.IP, dstIp6 net.IP) (result
 
 	var readyToListen sync.WaitGroup
 	readyToListen.Add(1)
+	stopWG.Add(1)
 	go listenIntoChannel(listenResultChannel, stopChannel, &stopWG, &readyToListen)
 	readyToListen.Wait()
 
@@ -118,8 +121,13 @@ func testInterface(intFace net.Interface, listenResultChannel chan *ListenResult
 	for _, result := range receiveResults {
 		if result.isV4 {
 			if result.remoteIP.Equal(SourceIPv4) {
-				result.Status = OK
-				result.ErrorText = "OK"
+				if result.ttlValue != 63 && result.ttlValue != -1 {
+					result.Status = UnexpectedTTL
+					result.ErrorText = "TTL value of " + strconv.FormatInt(int64(result.ttlValue), 10)
+				} else {
+					result.Status = OK
+					result.ErrorText = "OK"
+				}
 			} else {
 				result.ErrorText = "Invalid source IP: " + result.remoteIP.String()
 				result.Status = InvalidIP
@@ -127,8 +135,13 @@ func testInterface(intFace net.Interface, listenResultChannel chan *ListenResult
 			fr.V4 = result
 		} else {
 			if result.remoteIP.Equal(SourceIPv6) {
-				result.Status = OK
-				result.ErrorText = "OK"
+				if result.ttlValue != 63 && result.ttlValue != -1 {
+					result.Status = UnexpectedTTL
+					result.ErrorText = "TTL value of " + strconv.FormatInt(int64(result.ttlValue), 10)
+				} else {
+					result.Status = OK
+					result.ErrorText = "OK"
+				}
 			} else {
 				result.ErrorText = "Invalid source IP: " + result.remoteIP.String()
 				result.Status = InvalidIP
