@@ -14,9 +14,12 @@ import (
 )
 
 func main() {
-	destIPv4Str := flag.String("dst4", "", "destination IPv4 address (the address this host can be reached from) or CIDR to find address from 'lo'")
-	destIPv6Str := flag.String("dst6", "", "destination IPv6 address (the address this host can be reached from) or CIDR to find address from 'lo'")
-	targetInterface := flag.String("interface", "", "optional comma-separated target interface(s). Use '-' to read from stdin ")
+	destIPv4Str := flag.String("dst4", "", "destination IPv4 address "+
+		"(the address this host can be reached from) or CIDR to find address from 'lo'")
+	destIPv6Str := flag.String("dst6", "", "destination IPv6 address "+
+		"(the address this host can be reached from) or CIDR to find address from 'lo'")
+	targetInterface := flag.String("interface", "", "optional comma-separated target interface(s). "+
+		"Use '-' to read from stdin. If not specified, packets are sent on all interfaces")
 	jsonOutput := flag.Bool("json", false, "output as JSON")
 	daemon := flag.Bool("daemon", false, "run as a daemon and accept interface lists via unix socket")
 	flag.Parse()
