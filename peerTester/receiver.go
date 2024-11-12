@@ -18,7 +18,7 @@ func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.W
 	}
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
-		fmt.Printf(err.Error())
+		fmt.Print(err.Error())
 		os.Exit(1)
 	}
 	if !OutputJSON {
@@ -50,7 +50,6 @@ func listenIntoChannel(lst chan *ListenResult, stopChannel chan bool, wg *sync.W
 		<-stopChannel
 		stopping.Store(true)
 		_ = conn.SetDeadline(time.Now())
-		return
 	}()
 
 	var monotonic uint16 = 0

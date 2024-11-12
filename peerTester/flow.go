@@ -79,8 +79,8 @@ func testInterface(intFace net.Interface, listenResultChannel chan *ListenResult
 	var skipChannel = make(chan bool, 1)
 	defer close(skipChannel)
 
+	doneWg.Add(1)
 	go func() {
-		doneWg.Add(1)
 		defer doneWg.Done()
 
 		var err error
@@ -197,5 +197,4 @@ func setHighPriority() {
 	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pidSelf, wantNiceLevel); err != nil {
 		return
 	}
-	return
 }
